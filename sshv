@@ -1,0 +1,65 @@
+#!/usr/bin/env stack
+-- stack --resolver lts-15.5 script
+
+{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NumDecimals #-}
+
+import Control.Concurrent
+import Control.Monad
+import Data.List
+import System.Directory
+import System.Environment
+import System.Exit
+import System.Posix.Signals
+import System.Process.Typed
+
+username = "bretton"
+getPassword = "secret-tool lookup account ucla"
+server = "ssl.vpn.ucla.edu"
+port = 9019
+countFile = "/tmp/sshv-count"
+openconnectPidFile = "/tmp/openconnect.pid"
+
+readCountFile :: IO Int
+readCountFile = read <$!> readFile countFile
+
+writeCountFile :: Int -> IO ()
+writeCountFile = writeFile countFile . show
+
+main = do
+    runProcess
+        do proc "start-stop-daemon"
+            [ "--start"
+            , "--pidfile", openconnectPidFile
+            , "--background"
+            , "--make-pidfile"
+            , "--no-close"
+            , "--startas", "/bin/bash"
+            , "--"
+            , "-c"
+            , "exec openconnect -u " ++ username ++ " --script-tun "
+                ++ "--script 'ocproxy -D " ++ show port ++ "' " ++ server
+                ++ " < <(" ++ getPassword ++ ")" ]
+        >>= \case
+            ExitSuccess -> do
+                putStrLn "No VPN active, connecting to VPN"
+                writeCountFile 1
+            ExitFailure 1 -> do
+                putStrLn "VPN already active"
+                readCountFile >>= writeCountFile . succ
+    forM_ [sigINT, sigTERM, sigHUP] \sig ->
+        installHandler sig (Catch $ pure ()) Nothing
+    runProcess . proc "sshv-ssh" . (show port :) =<< getArgs
+    readCountFile >>= \case
+        1 -> do
+            putStrLn "No sessions left, terminating VPN connection"
+            runProcess $ proc "start-stop-daemon"
+                [ "--stop"
+                , "--pidfile", openconnectPidFile
+                , "--remove-pidfile" ]
+            removeFile countFile
+            threadDelay 1e6
+        n -> do
+            putStrLn "Another session active, not terminating VPN"
+            writeCountFile $ pred n
