@@ -1,4 +1,0 @@
-#!/bin/bash
-port=$1
-shift
-ssh -o ProxyCommand="sshv-nc-proxy $port %h %p" "$@"
